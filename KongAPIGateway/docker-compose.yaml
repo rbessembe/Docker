@@ -1,0 +1,164 @@
+version: "3.7"
+
+# Create docker volume as persistant storage
+volumes: 
+  data-volume:
+    name: kong-psql
+
+# Create Network 
+# docker network create --gateway 172.16.1.1 --subnet 172.16.1.0/24 kong-net
+
+networks:
+  kong-net:
+    external: true
+
+services:
+  #######################################
+  # Postgres: The database used by Kong
+  #######################################
+  kong-database:
+    image: postgres:9.6
+    container_name: kong-postgres
+    restart: always
+    networks:
+      kong-net:
+        ipv4_address: 172.16.1.10 
+    volumes:
+      - data-volume:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: kong
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: kong
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "kong"]
+      interval: 30s
+      timeout: 30s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 2000M
+    logging:
+      driver: "json-file"
+      options:
+          max-file: 3
+          max-size: 1m
+  #######################################
+  # Kong database migration
+  #######################################
+  kong-migration:
+    image: kong:2.7.1
+    container_name: kong-migration
+    command: kong migrations bootstrap
+    networks:
+      kong-net:
+        ipv4_address: 172.16.1.8   
+    restart: on-failure
+    environment:
+      KONG_DATABASE: postgres
+      KONG_PG_HOST: kong-database
+      KONG_PG_DATABASE: kong
+      KONG_PG_USER: kong
+      KONG_PG_PASSWORD: ${KONG_PG_PASSWORD}
+    depends_on:
+      - kong-database
+    deploy:
+      resources:
+        limits:
+          cpus: '0.1'
+          memory: 1000M
+
+
+  #######################################
+  # Kong: The API Gateway
+  #######################################
+  kong:
+    image: kong:2.7.1
+    container_name: kong-api-gw
+    restart: always
+    networks:
+      kong-net:
+        ipv4_address: 172.16.1.11
+    environment:
+      KONG_DATABASE: postgres
+      KONG_PG_HOST: kong-database
+      KONG_PG_DATABASE: kong
+      KONG_PG_USER: kong
+      KONG_PG_PASSWORD: ${KONG_PG_PASSWORD}
+      KONG_PROXY_LISTEN: 0.0.0.0:8000
+      KONG_PROXY_LISTEN_SSL: 0.0.0.0:8443
+      KONG_ADMIN_LISTEN: 0.0.0.0:8001
+      KONG_ADMIN_LISTEN_SSL: 0.0.0.0:8444
+    depends_on:
+      - kong-database
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+    ports:
+      - "8000:8000"
+      - "8001:8001"
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 2000M
+    logging:
+      driver: "json-file"
+      options:
+          max-file: 3
+          max-size: 1m
+
+  #######################################
+  # Konga database prepare
+  #######################################
+  konga-prepare:
+    image: pantsel/konga:0.14.9
+    container_name: konga-db-prepare
+    command: "-c prepare -a postgres -u postgresql://kong:${KONG_PG_PASSWORD}@kong-database:5432/konga"
+    networks:
+      kong-net:
+        ipv4_address: 172.16.1.9
+    restart: on-failure
+    depends_on:
+      - kong-database
+    deploy:
+      resources:
+        limits:
+          cpus: '0.1'
+          memory: 1000M
+
+
+  #######################################
+  # Konga: Kong GUI
+  #######################################
+  konga:
+    image: pantsel/konga:0.14.9
+    container_name: konga-web-ui
+    restart: always
+    networks:
+      kong-net:
+        ipv4_address: 172.16.1.12
+    environment:
+      DB_ADAPTER: postgres
+      DB_URI: postgresql://kong:${KONG_PG_PASSWORD}@kong-database:5432/konga
+      NODE_ENV: production
+    depends_on:
+      - kong-database
+    ports:
+      - "1337:1337"
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 2000M
+    logging:
+      driver: "json-file"
+      options:
+          max-file: 3
+          max-size: 1m
+

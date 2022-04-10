@@ -1,0 +1,98 @@
+version: '3'
+
+volumes:
+  prometheus-data:
+    name: prometheus-data
+
+  prometheus-tsdb-data:
+    name: prometheus-tsdb-data
+ 
+  grafana-data:
+    name: grafana-data
+  
+  grafana-dashboard:
+    name: grafana-dashboard
+# Create Network 
+# docker network create --gateway 172.20.1.1 --subnet 172.20.1.0/24 monitoring-net
+
+networks:
+  monitoring-net:
+    external: true
+
+services:
+  prometheus:
+    image: prom/prometheus:v2.33.3
+    container_name: prometheus
+    restart: always
+    ports:
+      - 9090:9090
+    volumes:
+      - prometheus-data:/etc/prometheus/
+      - prometheus-tsdb-data:/prometheus/
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=7d'
+    networks:
+      monitoring-net:
+        ipv4_address: 172.20.1.7
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 1000M
+    logging:
+      driver: "json-file"
+      options:
+        max-file: "3"
+        max-size: "1m"
+
+
+
+  node-exporter:
+    image: prom/node-exporter:v1.3.0
+    container_name: node-exporter
+    networks:
+      monitoring-net:
+        ipv4_address: 172.20.1.18
+    restart: unless-stopped
+    ports:
+      - 9100:9100
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 1000M
+    logging:
+      driver: "json-file"
+      options:
+        max-file: "3"
+        max-size: "1m"
+
+
+
+  grafana:
+    image: grafana/grafana:8.1.2
+    container_name: grafana
+    restart: always
+    volumes:
+      - grafana-data:/usr/share/grafana
+      - grafana-dashboard:/var/lib/grafana
+    networks:
+      monitoring-net:
+        ipv4_address: 172.20.1.8
+    ports:
+      - 3000:3000
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GF_SECURITY_ADMIN_PASSWORD}
+    depends_on:
+      - prometheus
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 1000M
+    logging:
+      driver: "json-file"
+      options:
+        max-file: "3"
+        max-size: "1m"
