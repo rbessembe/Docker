@@ -1,0 +1,96 @@
+stages:
+  - build-maven
+  - build-docker
+  - deploy-to-test
+  - deploy-to-prod
+
+variables:
+  DEVELOP_BRANCH: develop
+  RELEASE_BRANCH: main
+
+##### Templates #####
+.build_app: 
+  stage: build-maven
+  tags:
+    - example-runner
+  image: maven:3.8-openjdk-17
+  cache:
+    paths:
+      - .m2/repository
+  script:
+    - mvn clean install $MAVEN_OPTS
+
+.deploy:
+  image: alpine:3.15.4
+  tags:
+    - example-runner
+  before_script:
+    - apk add openssh-client
+    - eval $(ssh-agent -s)
+    - echo "$BASTION_HOST_SSH_KEY" | tr -d '\r' | ssh-add -
+    - mkdir -p ~/.ssh
+    - chmod 700 ~/.ssh
+    - cp $BASTION_HOST_SSH_KNOWN_HOSTS ~/.ssh/known_hosts
+
+.deploy_to_prod:
+  image: alpine:3.15.4
+  tags:
+    - example-runner
+  before_script:
+    - apk add openssh-client
+    - eval $(ssh-agent -s)
+    - echo "$SSH_KEY" | tr -d '\r' | ssh-add -
+    - mkdir -p ~/.ssh
+    - chmod 700 ~/.ssh
+    - cp $SSH_HOSTS ~/.ssh/known_hosts
+
+##### Jobs #####
+test_app:
+  extends: .build_app
+  only:
+    - merge_requests
+
+build_app: 
+  extends: .build_app
+  artifacts:
+    expire_in: 1h
+    paths:
+      - test-app/target/test-app.jar
+  only:
+    variables:
+      - $CI_COMMIT_REF_NAME == $DEVELOP_BRANCH || $CI_COMMIT_REF_NAME == $RELEASE_BRANCH
+
+build_docker_image:
+  stage: build-docker
+  tags:
+    - example-runner
+  image: docker:19.03
+  services: 
+    - name: docker:19.03-dind
+  script:
+    - docker login $AWS_DOCKER_REGISTRY -u $AWS_DOCKER_REGISTRY_USER -p $AWS_DOCKER_REGISTRY_USER_PASS
+    - cd example-app
+    - docker build . -t $AWS_DOCKER_REGISTRY/$CI_COMMIT_BRANCH/$CI_PROJECT_NAME:$CI_PIPELINE_ID
+    - docker push $AWS_DOCKER_REGISTRY/$CI_COMMIT_BRANCH/$CI_PROJECT_NAME:$CI_PIPELINE_ID
+    - docker logout $AWS_DOCKER_REGISTRY
+  only:
+    variables:
+      - $CI_COMMIT_REF_NAME == $DEVELOP_BRANCH || $CI_COMMIT_REF_NAME == $RELEASE_BRANCH
+
+deploy_to_test:
+  stage: deploy-to-test
+  extends: .deploy
+  script:
+    - ssh -tt $BASTION_HOST_USER@$BASTION_HOST "/home/ubuntu/remote.sh $AWS_DOCKER_REGISTRY/$CI_COMMIT_BRANCH/$CI_PROJECT_NAME:$CI_PIPELINE_ID"
+  only:
+    variables:
+      - $CI_COMMIT_REF_NAME == $DEVELOP_BRANCH || $CI_COMMIT_REF_NAME == $RELEASE_BRANCH
+
+deploy_to_prod:
+  rules:
+    - if: $CI_COMMIT_REF_NAME == $RELEASE_BRANCH
+      when: manual
+  stage: deploy-to-prod
+  extends: .deploy_to_prod
+  script:
+    - ssh -tt $HOST_USER@$HOST "sudo /home/crms2/crmsonline-api/remote.sh $AWS_DOCKER_REGISTRY/$CI_COMMIT_BRANCH/$CI_PROJECT_NAME:$CI_PIPELINE_ID"
